@@ -108,30 +108,31 @@ Hermes clones Git and reconciles the shipped `desktop/` into its app-level plugi
 folder; it neither builds TSX nor downloads Actions artifacts. The wheel is for
 Python packaging; the optional archive is for manual distribution.
 
-[Build workflow](.github/workflows/build.yml) runs locked frontend checks and the
-real installer/backend checks with read-only permissions on pull requests. It builds
-before testing the bundle and passes the resulting archive to the installer job.
-Local `desktop/plugin.js` is ignored; CI rejects generated asset changes in source
-PRs. Do not force-add the bundle. A clone of published `main` tracks the distributed
-file, so local rebuilds there can still show a diff; leave that diff out of source PRs.
+[Build workflow](.github/workflows/build.yml) only installs locked frontend
+dependencies, builds, checks that the bundle exists and is a regular file, and
+commits `desktop/plugin.js` to `main`. It runs on pushes to `main` and manual runs
+selecting `main`. It does not run tests, typecheck, lint, packaging or installer
+checks, and there is no PR workflow. Run the development checks above locally.
+Local `desktop/plugin.js` is ignored. Do not force-add the bundle to source PRs.
+A clone of published `main` tracks the distributed file, so local rebuilds there
+can still show a diff; leave that diff out of source PRs.
 
-After a push/merge to `main`, or a manual run selecting `main`, the guarded publisher
-rebuilds the triggering SHA that passed both validation jobs and commits only
-`desktop/plugin.js`. Publishers run independently and coordinate using an atomic
-expected-SHA push lease; each asset commit extends the exact fetched main tip.
-Rollbacks or rewrites racing a push are preserved.
+The publisher builds the triggering SHA. Publishers run independently and
+coordinate using an atomic expected-SHA push lease; each asset commit extends the
+exact fetched main tip. Rollbacks or rewrites racing a push are preserved.
 Newer source on main causes a safe skip so its own workflow handles publication;
-concurrent bot asset-only commits can be retried using the validated build. PRs and manual runs
-on other branches cannot publish. Only this job has `contents: write`; it uses the
-repository's `GITHUB_TOKEN`, with no custom secrets. Repository Actions settings and
-main branch rules must allow its bot to push; a rejected push fails visibly. It does
-not bypass protection. The token's asset push does not recursively trigger another
-push workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)).
+concurrent bot asset-only commits can be retried using the same pinned build.
+Manual runs on other branches cannot publish. Only the build job has
+`contents: write`; it uses the repository's `GITHUB_TOKEN`, with no custom secrets.
+Repository Actions settings and main branch rules must allow its bot to push; a
+rejected push fails visibly. It does not bypass protection. The token's asset push
+does not recursively trigger another push workflow
+([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)).
 
 **Bootstrap:** `main` currently has no bundle. Merging the source change alone is
 insufficient: wait for the successful publisher commit before using the one-line
 install. If publication fails, fix Actions permissions/branch rules and manually
-rerun on `main`. An uploaded CI archive alone cannot make a Git install work. Later
+rerun on `main`. A local archive alone cannot make a Git install work. Later
 source merges can briefly leave the previous bundle installed until publication;
 wait for success before installing/updating. GitHub-hosted write behavior remains
 unverified until an actual merged or manual `main` run succeeds.
