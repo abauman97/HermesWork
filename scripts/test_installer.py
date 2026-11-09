@@ -48,6 +48,7 @@ def main():
             "frontend/tests/frontend/*.tsx",
             "frontend/tests/e2e/*.ts",
             "scripts/*.py",
+            "scripts/*.sh",
             "tests/backend/*.py",
             "tests/docker/*",
             ".github/workflows/*.yml",
@@ -76,6 +77,8 @@ def main():
         )
         run(["git", "init", "--initial-branch=main", str(source)], env=env)
         run(["git", "-C", str(source), "add", "."], env=env)
+        # Simulate the post-merge Actions publication of the ignored bundle.
+        run(["git", "-C", str(source), "add", "-f", "desktop/plugin.js"], env=env)
         run(
             [
                 "git",

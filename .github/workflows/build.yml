@@ -4,7 +4,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Builds never publish code, create commits, or need custom secrets.
+# PR validation is read-only. Only the guarded publish job may write main.
 permissions:
   contents: read
 
@@ -15,6 +15,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Keep generated asset changes out of source PRs
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git diff --exit-code "$BASE_SHA" HEAD -- desktop/plugin.js
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "26"
@@ -23,13 +29,8 @@ jobs:
       - run: npm --prefix frontend ci
       - run: npm --prefix frontend run typecheck
       - run: npm --prefix frontend run lint
-      - run: npm --prefix frontend test
       - run: npm --prefix frontend run build
-      # Git installers clone the default branch. Artifact-only distribution cannot work.
-      - name: Require the generated bundle in Git, with current contents
-        run: |
-          git ls-files --error-unmatch desktop/plugin.js
-          git diff --exit-code -- desktop/plugin.js
+      - run: npm --prefix frontend test
       - run: python3 scripts/package.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -38,11 +39,21 @@ jobs:
           if-no-files-found: error
 
   hermes:
+    needs: assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: hermes-projects
+          path: dist
+      - name: Use the bundle built by this run
+        run: |
+          mkdir -p desktop
+          tar -xOf dist/hermes-projects-0.1.0.tar.gz hermes-projects/desktop/plugin.js > desktop/plugin.js
+          test -s desktop/plugin.js
       - name: Test the official installer and backend in a disposable Hermes container
         run: |
           docker run --rm --user root --entrypoint sh \
@@ -50,3 +61,34 @@ jobs:
             -v "$PWD:/source:ro" \
             nousresearch/hermes-agent@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002 \
             -c 'cp -R /source /tmp/plugin-tests && cd /tmp/plugin-tests && python3 scripts/test_installer.py && python3 scripts/check_backend.py'
+
+  publish:
+    needs: [assets, hermes]
+    # Never run with PR code or a manually selected feature branch.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    # Every validated run must reach the publisher, even out of order. A concurrency
+    # group's pending replacement could drop the newest revision. The script uses
+    # an atomic expected-SHA lease to coordinate concurrent publishers instead.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "26"
+      - name: Publish assets for the validated revision
+        env:
+          VALIDATED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          # Keep the running script stable across checkout resets.
+          cp scripts/publish-assets.sh "$RUNNER_TEMP/publish-assets.sh"
+          bash "$RUNNER_TEMP/publish-assets.sh"

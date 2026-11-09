@@ -57,8 +57,8 @@ Requires Node 26+ and Python 3.11+ with `uv` (validation used Node 26 and Python
 npm --prefix frontend ci
 npm --prefix frontend run typecheck
 npm --prefix frontend run lint
-npm --prefix frontend test
 npm --prefix frontend run build
+npm --prefix frontend test
 uv sync --locked
 uv run ruff check .
 uv run ty check hermes_projects dashboard
@@ -70,15 +70,16 @@ uv run python scripts/package.py
 
 `desktop/plugin.js` is generated plain ESM with only SDK/React external imports.
 The archive `dist/hermes-projects-0.1.0.tar.gz` includes that file, Python backend,
-manifest and installation metadata. A wheel alone contains the backend, not the
-unified plugin. See [Git installer evidence and current checks](docs/git-installation.md). Lockfiles capture tooling; `npm audit` is clean in the tested tree.
+manifest and installation metadata. Build before running bundle tests or packaging;
+clean source checkouts do not contain the generated bundle. A wheel alone contains
+the backend, not the unified plugin. See [Git installer evidence and current checks](docs/git-installation.md). Lockfiles capture tooling; `npm audit` is clean in the tested tree.
 The dev dependency override for minimatch selects a patched release; lint/tests
 verify it works with the current toolchain.
 
 ## Install from Git
 
-Once this change (including the generated bundle) is on the repository's default
-branch, install into the intended Hermes profile with one command:
+After this change is merged to `main` **and the first Actions publication succeeds**,
+install into the intended Hermes profile with one command:
 
 ```sh
 hermes plugins install https://github.com/abauman97/HermesWork.git --enable --yes-deps
@@ -100,24 +101,40 @@ backend is enabled. Use the same host/connection/profile as the install. See
 [after-install instructions](after-install.md).
 
 The repository root is the unified runtime package: `plugin.yaml`, buildable
-`pyproject.toml`, `hermes_projects/`, `dashboard/`, and **checked-in**
-`desktop/plugin.js`. Frontend source, npm manifests, lockfile and tests live under
-`frontend/`; Hermes only treats a root npm manifest as runtime dependencies.
+`pyproject.toml`, `hermes_projects/`, `dashboard/`, and Actions-published
+`desktop/plugin.js` on `main`. Frontend source, npm manifests, lockfile and tests
+live under `frontend/`; Hermes only treats a root npm manifest as runtime dependencies.
 Hermes clones Git and reconciles the shipped `desktop/` into its app-level plugin
 folder; it neither builds TSX nor downloads Actions artifacts. The wheel is for
 Python packaging; the optional archive is for manual distribution.
 
-[Build workflow](.github/workflows/build.yml) uses locked npm tooling, runs frontend
-checks, rebuilds the ESM bundle, and fails if it is missing from Git or differs.
-Commit source changes and the rebuilt `desktop/plugin.js` together when maintaining
-the plugin; configure the workflow as a required branch check to enforce this on
-merges. It also tests against the pinned official Hermes image and uploads an archive
-from an explicit runtime allowlist. Automation is read-only, checks out without
-persisted credentials, and never commits, pushes, publishes releases or uses custom
-secrets. Archive contents exclude developer tooling and credentials. A CI artifact
-alone is insufficient: the remote command above will continue installing the old
-layout until a maintainer merges this change into the default branch. No remote
-publication is performed by development or validation.
+[Build workflow](.github/workflows/build.yml) runs locked frontend checks and the
+real installer/backend checks with read-only permissions on pull requests. It builds
+before testing the bundle and passes the resulting archive to the installer job.
+Local `desktop/plugin.js` is ignored; CI rejects generated asset changes in source
+PRs. Do not force-add the bundle. A clone of published `main` tracks the distributed
+file, so local rebuilds there can still show a diff; leave that diff out of source PRs.
+
+After a push/merge to `main`, or a manual run selecting `main`, the guarded publisher
+rebuilds the triggering SHA that passed both validation jobs and commits only
+`desktop/plugin.js`. Publishers run independently and coordinate using an atomic
+expected-SHA push lease; each asset commit extends the exact fetched main tip.
+Rollbacks or rewrites racing a push are preserved.
+Newer source on main causes a safe skip so its own workflow handles publication;
+concurrent bot asset-only commits can be retried using the validated build. PRs and manual runs
+on other branches cannot publish. Only this job has `contents: write`; it uses the
+repository's `GITHUB_TOKEN`, with no custom secrets. Repository Actions settings and
+main branch rules must allow its bot to push; a rejected push fails visibly. It does
+not bypass protection. The token's asset push does not recursively trigger another
+push workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)).
+
+**Bootstrap:** `main` currently has no bundle. Merging the source change alone is
+insufficient: wait for the successful publisher commit before using the one-line
+install. If publication fails, fix Actions permissions/branch rules and manually
+rerun on `main`. An uploaded CI archive alone cannot make a Git install work. Later
+source merges can briefly leave the previous bundle installed until publication;
+wait for success before installing/updating. GitHub-hosted write behavior remains
+unverified until an actual merged or manual `main` run succeeds.
 
 This package needs no agent tools or hooks. The `dashboard/manifest.json` exists
 solely to load `/api/plugins/hermes-projects/*` on Hermes's shared server. It does

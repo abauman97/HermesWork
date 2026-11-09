@@ -34,22 +34,52 @@ No ChatHermes source, assets, process or credentials are needed.
 
 ## Automation
 
-`.github/workflows/build.yml` runs on pushes, pull requests and manual dispatch.
-Actions are pinned to commit SHAs, permissions are `contents: read`, checkout does
-not persist credentials, and no custom secret is referenced. There is no privileged
-pull-request trigger, bot commit, release publishing or automatic branch write.
+`.github/workflows/build.yml` validates pushes, pull requests and manual runs.
+Read-only validation checks out without persisted credentials, builds with locked
+npm dependencies before executing bundle tests, and uploads an allowlisted runtime
+archive. The separate Hermes job downloads that run's archive and extracts its
+bundle before testing the official installer/backend in the pinned disposable image.
+No PR artifact or PR checkout is used by the publisher. There is no
+`pull_request_target` trigger or custom secret.
 
-The assets job runs locked installation, typecheck, lint, unit tests, and build.
-`git ls-files --error-unmatch` plus `git diff --exit-code` requires the bundle to be
-committed and current. Source edits must include their rebuilt bundle in the same
-review. Maintainers should require this check on the default branch. This prevents
-an artifact-only release from pretending to support Git installation. It cannot
-control merges that bypass branch protection. The optional archive uses an explicit
-runtime file allowlist, excluding npm tooling, caches, credentials and tests.
+The publish job requires both validation jobs, is restricted to push/dispatch events
+on `refs/heads/main`, and alone has `contents: write` and persisted credentials.
+It has no workflow or job concurrency group: pending replacement must never drop
+the newest revision when validation jobs finish out of order. Publishers coordinate
+through an atomic push lease instead.
+The checkout and required `VALIDATED_SHA` are both pinned to `github.sha`, including
+manual runs. `scripts/publish-assets.sh` removes old output, installs locked dependencies,
+typechecks, lints, builds and runs bundle tests at that exact validated revision.
+Newer source on main before/during the build or at push time causes a successful
+skip, leaving publication to the newer revision's workflow. A rewritten main also
+causes a skip. Only a linear chain of bot-authored and bot-committed updates changing
+solely `desktop/plugin.js` may extend the validated revision. These commits need no
+new workflow; the publisher retries the same validated bundle on top of them, up to
+three push attempts, and exits without a commit if the output already matches.
+Each push uses `--force-with-lease=refs/heads/main:<exact fetched SHA>` and a commit
+whose parent is that SHA, so successful updates are always fast-forward. The explicit
+lease rejects even a rollback to an ancestor between fetch and push; retries skip
+rolled-back or rewritten main instead of restoring removed history. There is no
+unconditional force push. A rejected push without a changed main fails immediately
+with a permissions/rules diagnostic. The script runs from a temporary copy so
+checkout resets cannot replace it mid-run.
 
-The separate Hermes job runs the real installer and Python checks inside the pinned
-official image. The source mount is read-only, copied into temporary container
-storage. No host Hermes directory or profile is mounted.
+Local generated assets are ignored; a read-only PR check rejects bundle changes
+against the PR base. Published main necessarily tracks the distribution file, so
+local rebuilds of that tracked copy can still show a diff. Keep it out of source PRs.
+Actions owns asset commits on main. Unlike ChatHermes's reference GitHub App publisher, this
+uses `GITHUB_TOKEN`, avoiding custom secrets and recursive push runs
+([GitHub token behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)).
+Configure Actions write access and main branch rules to allow that bot to push;
+the workflow does not bypass branch protection. Require the validation jobs for
+source merges. GitHub-hosted token permissions and branch-rule compatibility cannot
+be established by local tests.
+
+**Bootstrap:** main has no `desktop/plugin.js` before this change. The first
+post-merge Actions run must publish it successfully before the one-line Git install
+works. If it fails, correct repository permissions/rules and dispatch on `main`.
+An archive upload is insufficient. On subsequent source merges, wait for publication
+before installing/updating to avoid cloning the previous bundle.
 
 ## Reproduce the installer and backend checks
 
@@ -69,7 +99,8 @@ docker run --rm --user root --entrypoint sh \
 proposed repository's runtime and development trees from explicit file patterns
 into a temporary Git repository, creates a fixture commit on `main`, then invokes
 Hermes's actual CLI with `file://... --enable --yes-deps`, without a ref. These
-fixture commits never touch the worktree's Git index, history, branches or remotes.
+fixture commits force-add the ignored bundle to simulate Actions publication and
+never touch the worktree's Git index, history, branches or remotes.
 `HOME`, `HERMES_HOME` and Git configuration are isolated. The CLI, security scanner,
 Git clone, dependency resolver and PM publisher are not mocked. There is no manual
 pip installation, `--no-deps`, Node sidecar, frontend build during installation, or
@@ -103,7 +134,7 @@ is in [validation.md](validation.md).
   actual PM resolution/installation, enabled backend, native CRUD, host API mount,
   and Desktop reconciliation all passed. The container also ran the Python checks,
   all 21 tests and wheel/sdist build successfully.
-- Workflow syntax: `actionlint` 1.7.7 passed.
+- Earlier workflow syntax: `actionlint` 1.7.7 passed; see current verification below.
 - Generated/installed/reconciled `plugin.js` SHA-256:
   `a63b6fc799b8b9ee9a4c7a8b62856e04d282b9158a5f729084925bc9775a6164`.
 
@@ -118,9 +149,9 @@ No claim is made for other Hermes versions or operating systems.
 `git ls-remote --symref origin HEAD` confirmed remote `main` still points at
 `1b9b6f86312369636910b3b1b2fd467fc6a3952a`. That revision predates this layout. No
 remote install of the proposed changes is possible without publication, so the
-smoke uses an actual local Git source instead. No worktree commit, push, deployment
-or PR was made. After a maintainer merges all changes, including `desktop/plugin.js`,
-the supported operator command is:
+smoke uses an actual local Git source instead. No worktree commit, push or deployment
+was made. After a maintainer merges the source changes and the first Actions publisher
+successfully commits `desktop/plugin.js` to main, the supported operator command is:
 
 ```sh
 hermes plugins install https://github.com/abauman97/HermesWork.git --enable --yes-deps
@@ -128,3 +159,36 @@ hermes plugins install https://github.com/abauman97/HermesWork.git --enable --ye
 
 Then restart the serving gateway, reopen Desktop/reload Webapp, and opt into
 **Projects** in **Capabilities → Plugins** as described in README.md.
+
+## Actions-owned publication follow-up
+
+The prior results above describe the original packaging revision. Current local
+verification exercises the actual publisher shell script against disposable bare
+Git remotes, with npm replaced by deterministic fixture output: bootstrap,
+unchanged output, newer source before/during builds and at push, concurrent bot
+asset-only commits, competing publishers, out-of-order validation completion,
+source and bot-asset rollbacks between the final fetch and push, manual runs pinned
+to their triggering SHA, rewritten history, missing output, build failure and permission
+rejection. Successful publication is also checked with non-fast-forward updates
+disabled on the remote. The new regressions reject the previous push and concurrency
+behavior. These tests
+create commits and pushes only in temporary repositories. The normal frontend build
+and tests verify the real generated ESM separately. The installer fixture explicitly
+force-adds the ignored bundle to model the published main layout. The exact PR
+bundle-policy command is also tested against source-only and generated-file changes,
+both before and after bootstrap.
+
+Current checks passed:
+
+- Frontend typecheck, lint, build and all **39 tests**.
+- Python Ruff and Ty checks; all **50 tests**, including **29 publication/policy tests**.
+- `actionlint` **1.7.7** on the updated workflow and `git diff --check`.
+- The local bundle remains ignored and byte-identical to the previously validated
+  SHA-256 above, with no `desktop/plugin.js` change against main in the final PR diff.
+
+The official-container installer smoke result above is historical; that container
+smoke was not rerun for this follow-up. The changed fixture is configured for the
+next read-only CI run.
+
+GitHub-hosted writes remain unverified until the first successful merged/manual
+main run. No repository permissions or remote branch protection were changed here.

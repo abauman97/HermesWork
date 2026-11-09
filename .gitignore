@@ -10,3 +10,6 @@ playwright-report/
 test-results/
 *.egg-info/
 dist/
+
+# Generated locally; only the main-branch Actions publisher force-adds this file.
+/desktop/plugin.js
