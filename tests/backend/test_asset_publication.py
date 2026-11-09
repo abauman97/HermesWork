@@ -39,7 +39,8 @@ def publication(tmp_path):
         "import os, pathlib, subprocess, sys, time\n"
         "with open(os.environ['BUILD_LOG'], 'a') as log:\n"
         "    log.write(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True))\n"
-        "if sys.argv[3:] != ['run', 'build']: sys.exit(0)\n"
+        "if sys.argv[1:] == ['--prefix', 'frontend', 'ci']: sys.exit(0)\n"
+        "assert sys.argv[1:] == ['--prefix', 'frontend', 'run', 'build'], sys.argv\n"
         "root = pathlib.Path.cwd()\n"
         "mode = os.environ.get('MODE', '')\n"
         "if mode == 'fail': sys.exit(1)\n"
@@ -75,7 +76,7 @@ def publication(tmp_path):
     npm.chmod(0o755)
     env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}",
                WRITER=str(writer), MARKER=str(tmp_path / "marker"),
-               VALIDATED_SHA=git(runner, "rev-parse", "HEAD"),
+               SOURCE_SHA=git(runner, "rev-parse", "HEAD"),
                BUILD_LOG=str(tmp_path / "build.log"))
     return remote, writer, runner, env
 
@@ -90,7 +91,7 @@ def test_bootstrap_and_unchanged(publication):
     remote, _, runner, env = publication
     git(remote, "config", "receive.denyNonFastForwards", "true")
     assert publish(publication).returncode == 0
-    assert git(remote, "rev-parse", "main^") == env["VALIDATED_SHA"]
+    assert git(remote, "rev-parse", "main^") == env["SOURCE_SHA"]
     assert git(remote, "show", "main:desktop/plugin.js") == "initial"
     assert git(remote, "diff-tree", "--no-commit-id", "--name-only", "-r", "main") == (
         "desktop/plugin.js"
@@ -174,31 +175,34 @@ def test_main_advances_between_final_fetch_and_push(publication, tmp_path, race)
         assert "skipping publication" in result.stdout
         assert_no_bundle(remote)
         assert git(writer, "show", "main:source") == "raced"
-    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["VALIDATED_SHA"]}
+    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["SOURCE_SHA"]}
     assert Path(env["MARKER"]).exists()
 
 
-def test_workflow_keeps_pr_validation_unprivileged():
+def test_workflow_only_builds_and_publishes_main():
     workflow = (ROOT / ".github/workflows/build.yml").read_text()
-    validation, publisher = workflow.split("\n  publish:\n")
-    assert "pull_request:" in validation
-    assert "pull_request_target" not in workflow
-    assert "contents: write" not in validation
-    assert "persist-credentials: true" not in validation
+    assert "branches: [main]" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "pull_request" not in workflow
     assert "secrets." not in workflow
-    assert "needs: [assets, hermes]" in publisher
-    assert "github.ref == 'refs/heads/main'" in publisher
-    assert "github.event_name == 'push' || github.event_name == 'workflow_dispatch'" in publisher
+    assert "needs:" not in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "github.event_name == 'push' || github.event_name == 'workflow_dispatch'" in workflow
+    assert "contents: write" in workflow
+    assert "persist-credentials: true" in workflow
     # A late older run must not replace the newest run in a pending slot.
     assert not any(line.lstrip().startswith("concurrency:") for line in workflow.splitlines())
-    assert 'bash "$RUNNER_TEMP/publish-assets.sh"' in publisher
-    assert "npm --prefix frontend run build" in validation
-    assert validation.index("run build") < validation.index("frontend test")
-    assert 'git diff --exit-code "$BASE_SHA" HEAD -- desktop/plugin.js' in validation
-    assert "actions/download-artifact@" in validation
-    assert "ref: ${{ github.sha }}" in publisher
-    assert "VALIDATED_SHA: ${{ github.sha }}" in publisher
-    assert "ref: main" not in publisher
+    assert 'bash "$RUNNER_TEMP/publish-assets.sh"' in workflow
+    assert "ref: ${{ github.sha }}" in workflow
+    assert "SOURCE_SHA: ${{ github.sha }}" in workflow
+    for unnecessary in ["frontend test", "typecheck", "lint", "docker", "artifact@", "package.py"]:
+        assert unnecessary not in workflow
+    script = SCRIPT.read_text()
+    assert "npm --prefix frontend ci" in script
+    assert "npm --prefix frontend run build" in script
+    assert "frontend test" not in script
+    assert "typecheck" not in script
+    assert "run lint" not in script
 
 
 def test_competing_publishers_converge_without_duplicate_commits(publication, tmp_path):
@@ -231,7 +235,7 @@ def test_rollback_between_final_fetch_and_push_is_preserved(publication, tmp_pat
     expected_sha = git(remote, "rev-parse", "main")
     if rollback == "source":
         git(runner, "fetch", "origin")
-        env["VALIDATED_SHA"] = expected_sha
+        env["SOURCE_SHA"] = expected_sha
     real_git = shutil.which("git")
     push_log = tmp_path / "push.log"
     wrapper = tmp_path / "bin/git"
@@ -264,11 +268,11 @@ def test_rollback_between_final_fetch_and_push_is_preserved(publication, tmp_pat
     ]
 
 
-def test_out_of_order_validation_cannot_drop_newest_publisher(publication, tmp_path):
+def test_out_of_order_runs_cannot_drop_newest_publisher(publication, tmp_path):
     remote, writer, oldest, env = publication
     workflow = (ROOT / ".github/workflows/build.yml").read_text()
     assert not any(line.lstrip().startswith("concurrency:") for line in workflow.splitlines())
-    # Oldest is active. Newest finishes validation before middle. With a concurrency
+    # Oldest is active. Newest starts publication before middle. With a concurrency
     # group, newest would be pending and then cancelled by middle's arrival.
     active = subprocess.Popen(["bash", str(SCRIPT)], cwd=oldest,
                               env=dict(env, MODE="paused"), stdout=subprocess.PIPE,
@@ -287,7 +291,7 @@ def test_out_of_order_validation_cannot_drop_newest_publisher(publication, tmp_p
         for name, sha in [("newest", newest_sha), ("middle", middle_sha)]:
             runner = tmp_path / name
             git(tmp_path, "clone", str(remote), str(runner))
-            result = publish((remote, writer, runner, dict(env, VALIDATED_SHA=sha)))
+            result = publish((remote, writer, runner, dict(env, SOURCE_SHA=sha)))
             assert result.returncode == 0, result.stdout + result.stderr
             if name == "middle":
                 assert "skipping publication" in result.stdout
@@ -306,29 +310,17 @@ def test_out_of_order_validation_cannot_drop_newest_publisher(publication, tmp_p
             active.communicate()
 
 
-@pytest.mark.parametrize("published", [False, True])
-def test_actual_pr_bundle_policy_accepts_source_and_rejects_assets(publication, published):
-    _, writer, _, env = publication
-    if published:
-        assert publish(publication).returncode == 0
-        git(writer, "pull", "--ff-only")
-    base = git(writer, "rev-parse", "HEAD")
-    (writer / "source").write_text("source PR")
-    git(writer, "add", "source")
-    git(writer, "commit", "-m", "source PR")
-    # Execute the exact PR check from the workflow, both before and after bootstrap.
-    workflow = (ROOT / ".github/workflows/build.yml").read_text()
-    command = next(line.removeprefix("        run: ") for line in workflow.splitlines()
-                   if line.startswith("        run: git diff"))
-    check_env = dict(env, BASE_SHA=base)
-    assert subprocess.run(["bash", "-c", command], cwd=writer, env=check_env,
-                          capture_output=True).returncode == 0
-    (writer / "desktop").mkdir(exist_ok=True)
-    (writer / "desktop/plugin.js").write_text("bundle in source PR")
-    git(writer, "add", "-f", "desktop/plugin.js")
-    git(writer, "commit", "-m", "forbidden generated change")
-    assert subprocess.run(["bash", "-c", command], cwd=writer, env=check_env,
-                          capture_output=True).returncode != 0
+def test_local_build_is_ignored(publication):
+    _, writer, _, _ = publication
+    # Use the actual ignore policy, without force-adding local build output.
+    (writer / ".gitignore").write_text((ROOT / ".gitignore").read_text())
+    git(writer, "add", ".gitignore")
+    git(writer, "commit", "-m", "ignore local builds")
+    (writer / "desktop").mkdir()
+    (writer / "desktop/plugin.js").write_text("local bundle")
+    git(writer, "add", ".")
+    assert git(writer, "diff", "--cached", "--name-only") == ""
+    assert git(writer, "check-ignore", "desktop/plugin.js") == "desktop/plugin.js"
 
 
 def assert_no_bundle(remote):
@@ -370,12 +362,12 @@ def test_manual_and_push_build_only_triggering_sha(publication, event):
     env["GITHUB_EVENT_NAME"] = event
     result = publish(publication)
     assert result.returncode == 0, result.stderr
-    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["VALIDATED_SHA"]}
+    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["SOURCE_SHA"]}
 
 
 @pytest.mark.parametrize("bot,path", [(True, "desktop/plugin.js"),
                                       (False, "desktop/plugin.js"), (True, "source")])
-def test_only_bot_asset_commits_can_extend_validated_sha(publication, bot, path):
+def test_only_bot_asset_commits_can_extend_source_sha(publication, bot, path):
     remote, writer, _, env = publication
     advance_main(writer, bot=bot, path=path, content="concurrent output")
     before = git(remote, "rev-parse", "main")
@@ -384,20 +376,20 @@ def test_only_bot_asset_commits_can_extend_validated_sha(publication, bot, path)
     if bot and path == "desktop/plugin.js":
         assert git(remote, "show", "main:desktop/plugin.js") == "initial"
         assert git(remote, "rev-parse", "main^") == before
-        assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["VALIDATED_SHA"]}
+        assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["SOURCE_SHA"]}
     else:
         assert "skipping publication" in result.stdout
         assert git(remote, "rev-parse", "main") == before
         assert not Path(env["BUILD_LOG"]).exists()
 
 
-def test_missing_validated_sha_fails_closed(publication):
+def test_missing_source_sha_fails_closed(publication):
     remote, _, _, env = publication
-    del env["VALIDATED_SHA"]
+    del env["SOURCE_SHA"]
     before = git(remote, "rev-parse", "main")
     result = publish(publication)
     assert result.returncode != 0
-    assert "VALIDATED_SHA is required" in result.stderr
+    assert "SOURCE_SHA is required" in result.stderr
     assert git(remote, "rev-parse", "main") == before
 
 
@@ -426,18 +418,18 @@ def test_asset_commit_cannot_hide_intervening_source_change(publication):
     assert not Path(env["BUILD_LOG"]).exists()
 
 
-def test_manual_run_can_validate_existing_bot_asset_commit(publication):
+def test_manual_run_can_build_existing_bot_asset_commit(publication):
     remote, _, runner, env = publication
     assert publish(publication).returncode == 0
-    env["VALIDATED_SHA"] = git(remote, "rev-parse", "main")
+    env["SOURCE_SHA"] = git(remote, "rev-parse", "main")
     Path(env["BUILD_LOG"]).unlink()
     env["GITHUB_EVENT_NAME"] = "workflow_dispatch"
     result = publish(publication)
     assert result.returncode == 0, result.stderr
     assert "unchanged" in result.stdout
-    assert git(remote, "rev-parse", "main") == env["VALIDATED_SHA"]
-    assert git(runner, "rev-parse", "HEAD") == env["VALIDATED_SHA"]
-    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["VALIDATED_SHA"]}
+    assert git(remote, "rev-parse", "main") == env["SOURCE_SHA"]
+    assert git(runner, "rev-parse", "HEAD") == env["SOURCE_SHA"]
+    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["SOURCE_SHA"]}
 
 
 def test_multiple_bot_asset_commits_keep_build_pinned(publication):
@@ -447,10 +439,10 @@ def test_multiple_bot_asset_commits_keep_build_pinned(publication):
     result = publish(publication)
     assert result.returncode == 0, result.stderr
     assert git(remote, "show", "main:desktop/plugin.js") == "initial"
-    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["VALIDATED_SHA"]}
+    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["SOURCE_SHA"]}
 
 
-def test_bot_merge_cannot_bypass_source_validation(publication):
+def test_bot_merge_cannot_bypass_source_pinning(publication):
     remote, writer, _, env = publication
     git(writer, "checkout", "-b", "unvalidated")
     (writer / "source").write_text("unvalidated backend")
@@ -469,7 +461,7 @@ def test_bot_merge_cannot_bypass_source_validation(publication):
     assert not Path(env["BUILD_LOG"]).exists()
 
 
-def test_bot_asset_deletion_can_be_repaired_from_validated_build(publication):
+def test_bot_asset_deletion_can_be_repaired_from_pinned_build(publication):
     remote, writer, _, env = publication
     assert publish(publication).returncode == 0
     git(writer, "pull", "--ff-only")
@@ -482,4 +474,4 @@ def test_bot_asset_deletion_can_be_repaired_from_validated_build(publication):
     result = publish(publication)
     assert result.returncode == 0, result.stderr
     assert git(remote, "show", "main:desktop/plugin.js") == "initial"
-    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["VALIDATED_SHA"]}
+    assert set(Path(env["BUILD_LOG"]).read_text().splitlines()) == {env["SOURCE_SHA"]}

@@ -34,27 +34,26 @@ No ChatHermes source, assets, process or credentials are needed.
 
 ## Automation
 
-`.github/workflows/build.yml` validates pushes, pull requests and manual runs.
-Read-only validation checks out without persisted credentials, builds with locked
-npm dependencies before executing bundle tests, and uploads an allowlisted runtime
-archive. The separate Hermes job downloads that run's archive and extracts its
-bundle before testing the official installer/backend in the pinned disposable image.
-No PR artifact or PR checkout is used by the publisher. There is no
-`pull_request_target` trigger or custom secret.
+`.github/workflows/build.yml` has one build/publish job. It runs only on pushes
+to `main` and manual runs selecting `main`; there is no PR workflow. Like the
+ChatHermes build/release workflow, its only work is installing locked dependencies,
+building, verifying required output and committing assets. It does not run tests,
+typecheck, lint, archive packaging or installer/backend checks. These remain local
+checks, with reproduction commands below and in README.md. No artifacts are
+uploaded or downloaded, and no custom secrets are required.
 
-The publish job requires both validation jobs, is restricted to push/dispatch events
-on `refs/heads/main`, and alone has `contents: write` and persisted credentials.
-It has no workflow or job concurrency group: pending replacement must never drop
-the newest revision when validation jobs finish out of order. Publishers coordinate
-through an atomic push lease instead.
-The checkout and required `VALIDATED_SHA` are both pinned to `github.sha`, including
-manual runs. `scripts/publish-assets.sh` removes old output, installs locked dependencies,
-typechecks, lints, builds and runs bundle tests at that exact validated revision.
+The job is restricted to push/dispatch events on `refs/heads/main` and alone has
+`contents: write` and persisted credentials. There is no concurrency group:
+pending replacement must never drop the newest revision when runs arrive out of
+order. Publishers coordinate through an atomic push lease instead.
+The checkout and required `SOURCE_SHA` are pinned to `github.sha`, including manual
+runs. `scripts/publish-assets.sh` removes old output, installs locked dependencies
+and builds at that exact source revision. It requires a nonempty, non-symlink bundle.
 Newer source on main before/during the build or at push time causes a successful
 skip, leaving publication to the newer revision's workflow. A rewritten main also
 causes a skip. Only a linear chain of bot-authored and bot-committed updates changing
-solely `desktop/plugin.js` may extend the validated revision. These commits need no
-new workflow; the publisher retries the same validated bundle on top of them, up to
+solely `desktop/plugin.js` may extend the source revision. These commits need no
+new workflow; the publisher retries the same pinned bundle on top of them, up to
 three push attempts, and exits without a commit if the output already matches.
 Each push uses `--force-with-lease=refs/heads/main:<exact fetched SHA>` and a commit
 whose parent is that SHA, so successful updates are always fast-forward. The explicit
@@ -64,22 +63,23 @@ unconditional force push. A rejected push without a changed main fails immediate
 with a permissions/rules diagnostic. The script runs from a temporary copy so
 checkout resets cannot replace it mid-run.
 
-Local generated assets are ignored; a read-only PR check rejects bundle changes
-against the PR base. Published main necessarily tracks the distribution file, so
-local rebuilds of that tracked copy can still show a diff. Keep it out of source PRs.
-Actions owns asset commits on main. Unlike ChatHermes's reference GitHub App publisher, this
-uses `GITHUB_TOKEN`, avoiding custom secrets and recursive push runs
+Local generated assets are ignored; keep generated bundle changes out of source
+PRs. There is no automated PR policy check. Published main necessarily tracks the
+distribution file, so local rebuilds of that tracked copy can still show a diff.
+Keep it out of source PRs. Actions owns asset commits on main. Unlike ChatHermes's
+reference GitHub App publisher, this uses `GITHUB_TOKEN`, avoiding custom secrets and recursive push runs
 ([GitHub token behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)).
 Configure Actions write access and main branch rules to allow that bot to push;
-the workflow does not bypass branch protection. Require the validation jobs for
-source merges. GitHub-hosted token permissions and branch-rule compatibility cannot
-be established by local tests.
+the workflow does not bypass branch protection. Remove obsolete required validation
+job checks from branch rules if they were configured for the former workflow.
+GitHub-hosted token permissions and branch-rule compatibility cannot be established
+by local tests.
 
 **Bootstrap:** main has no `desktop/plugin.js` before this change. The first
 post-merge Actions run must publish it successfully before the one-line Git install
 works. If it fails, correct repository permissions/rules and dispatch on `main`.
-An archive upload is insufficient. On subsequent source merges, wait for publication
-before installing/updating to avoid cloning the previous bundle.
+A locally packaged archive is insufficient. On subsequent source merges, wait for
+publication before installing/updating to avoid cloning the previous bundle.
 
 ## Reproduce the installer and backend checks
 
@@ -160,35 +160,36 @@ hermes plugins install https://github.com/abauman97/HermesWork.git --enable --ye
 Then restart the serving gateway, reopen Desktop/reload Webapp, and opt into
 **Projects** in **Capabilities → Plugins** as described in README.md.
 
-## Actions-owned publication follow-up
+## Build-only publication follow-up
 
-The prior results above describe the original packaging revision. Current local
-verification exercises the actual publisher shell script against disposable bare
-Git remotes, with npm replaced by deterministic fixture output: bootstrap,
-unchanged output, newer source before/during builds and at push, concurrent bot
-asset-only commits, competing publishers, out-of-order validation completion,
-source and bot-asset rollbacks between the final fetch and push, manual runs pinned
-to their triggering SHA, rewritten history, missing output, build failure and permission
-rejection. Successful publication is also checked with non-fast-forward updates
-disabled on the remote. The new regressions reject the previous push and concurrency
-behavior. These tests
-create commits and pushes only in temporary repositories. The normal frontend build
-and tests verify the real generated ESM separately. The installer fixture explicitly
-force-adds the ignored bundle to model the published main layout. The exact PR
-bundle-policy command is also tested against source-only and generated-file changes,
-both before and after bootstrap.
+The results above are historical packaging/installer evidence. The current workflow
+runs no validation jobs; frontend and backend checks remain available locally.
+Publication regressions exercise the exact shell script with disposable bare Git
+remotes and deterministic npm fixture output. The fixture rejects every npm command
+except locked installation and build. Coverage includes bootstrap, unchanged output,
+source races, competing publishers, bot asset-only retries, out-of-order runs,
+rollbacks, rewrites, missing output, build failure and permission rejection.
+Successful publication is checked with non-fast-forward updates disabled on the
+remote. Commits and pushes occur only in temporary test repositories.
+The actual ignore policy is exercised separately; normal local builds stay ignored.
 
-Current checks passed:
+GitHub-hosted writes remain unverified until a successful merged/manual main run.
+Repository permissions and remote branch protection are not changed here. A stale
+run skips newer source rather than rebuilding it: wait for the newer run's asset
+commit, or dispatch again on main if that run fails. The official-container installer
+smoke and browser results above are historical and are not performed by the action.
 
-- Frontend typecheck, lint, build and all **39 tests**.
-- Python Ruff and Ty checks; all **50 tests**, including **29 publication/policy tests**.
-- `actionlint` **1.7.7** on the updated workflow and `git diff --check`.
-- The local bundle remains ignored and byte-identical to the previously validated
-  SHA-256 above, with no `desktop/plugin.js` change against main in the final PR diff.
+Current local verification (2026-11-09):
 
-The official-container installer smoke result above is historical; that container
-smoke was not rerun for this follow-up. The changed fixture is configured for the
-next read-only CI run.
+- Locked npm installation and frontend build passed; all 39 frontend tests passed.
+- All 28 publication/workflow/ignore tests passed; Ruff passed for the changed test.
+- `actionlint` 1.7.7 and `git diff --check` passed.
+- The publisher also ran with real npm against a disposable local bare remote:
+  asset-only fast-forward publication, byte-identical bundle, unchanged rerun with
+  no extra commit, and a clean disposable checkout all passed.
+- The worktree bundle remains ignored with SHA-256
+  `a63b6fc799b8b9ee9a4c7a8b62856e04d282b9158a5f729084925bc9775a6164`.
 
-GitHub-hosted writes remain unverified until the first successful merged/manual
-main run. No repository permissions or remote branch protection were changed here.
+No worktree commit, network push or deployment was performed. The Python test run
+reported a third-party pytest deprecation warning; npm reported a blocked esbuild
+postinstall script under npm 12, but installation and both real builds succeeded.
