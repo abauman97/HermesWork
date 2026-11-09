@@ -6,13 +6,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import plugin, { Indicator, Page } from "../../desktop/src/plugin";
-import {
-  guardDraft,
-  projectRoute,
-  route,
-  sessions,
-} from "../../desktop/src/logic";
+import plugin, { Indicator, Page } from "../../src/plugin";
+import { guardDraft, projectRoute, route, sessions } from "../../src/logic";
 import { host } from "./sdk";
 import type { PluginContext } from "@hermes/plugin-sdk";
 
@@ -369,7 +364,7 @@ it.each(["hash", "profile", "connection"])(
 );
 
 it("requires confirmation before forgetting a stale saved request and never creates automatically", async () => {
-  const { receiptKey } = await import("../../desktop/src/chat");
+  const { receiptKey } = await import("../../src/chat");
   window.location.hash = "#/projects?project=p_123";
   const key = receiptKey("local", "default", project.id);
   sessionStorage.setItem(key, "corrupt");

@@ -3,10 +3,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 node_modules/
-desktop/plugin.js
 artifacts/*
+frontend/artifacts/
 !artifacts/.gitkeep
 playwright-report/
 test-results/
 *.egg-info/
 dist/
+
+# Generated locally; only the main-branch Actions publisher force-adds this file.
+/desktop/plugin.js

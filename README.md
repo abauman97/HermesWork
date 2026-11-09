@@ -51,14 +51,14 @@ needed text first. No selective per-composer interception is claimed.
 
 ## Build and package
 
-Requires Node 22+ and Python 3.11+ with `uv` (validation used Node 26 and Python 3.14).
+Requires Node 26+ and Python 3.11+ with `uv` (validation used Node 26 and Python 3.14).
 
 ```sh
-npm ci
-npm run typecheck
-npm run lint
-npm test
-npm run build
+npm --prefix frontend ci
+npm --prefix frontend run typecheck
+npm --prefix frontend run lint
+npm --prefix frontend run build
+npm --prefix frontend test
 uv sync --locked
 uv run ruff check .
 uv run ty check hermes_projects dashboard
@@ -70,23 +70,71 @@ uv run python scripts/package.py
 
 `desktop/plugin.js` is generated plain ESM with only SDK/React external imports.
 The archive `dist/hermes-projects-0.1.0.tar.gz` includes that file, Python backend,
-manifest and installation metadata. A wheel alone contains the backend, not the
-unified plugin. Lockfiles capture tooling; `npm audit` is clean in the tested tree.
+manifest and installation metadata. Build before running bundle tests or packaging;
+clean source checkouts do not contain the generated bundle. A wheel alone contains
+the backend, not the unified plugin. See [Git installer evidence and current checks](docs/git-installation.md). Lockfiles capture tooling; `npm audit` is clean in the tested tree.
 The dev dependency override for minimatch selects a patched release; lint/tests
 verify it works with the current toolchain.
 
-## Install into a chosen disposable or user-managed Hermes home
+## Install from Git
 
-Installation is an operator action; development and packaging never write to a
-live profile. Build/extract the archive first. Place the extracted `hermes-projects`
-directory under the chosen Hermes home's `plugins/` directory. Install its Python
-package with Hermes's own Python environment (or the profile's plugin-host
-installer), e.g. `uv pip install --no-deps --python <hermes-python> <plugin-directory>`. The audited Hermes environment already supplies FastAPI and Pydantic; preserve its dependency versions.
-Enable `hermes-projects` through Hermes's plugin controls for the intended profile.
-Restart the gateway if needed for initial backend discovery, then enable **Projects**
-in **Capabilities → Plugins** in Desktop/Webapp. Unified packages' Desktop halves
-are opt-in even when their agent half is enabled. Hermes reconciles `desktop/`
-into its app-level plugin folder; do not point the loader at TSX source.
+After this change is merged to `main` **and the first Actions publication succeeds**,
+install into the intended Hermes profile with one command:
+
+```sh
+hermes plugins install https://github.com/abauman97/HermesWork.git --enable --yes-deps
+```
+
+For a named profile, run the same command with Hermes's global `--profile <name>`
+option before `plugins`. `--enable` selects the backend; `--yes-deps` explicitly
+consents to Hermes PM preparing the Python package and its FastAPI/Pydantic
+requirements with the enabled plugin set. Omit `--yes-deps` for interactive consent.
+There is no manual pip step, Node dependency install, local build, archive download,
+or ChatHermes runtime. PM refusal must be resolved before enabling; `--no-deps`
+leaves the plugin disabled and does not provide a working installation.
+
+Restart the serving gateway (`hermes gateway restart` for a managed gateway, or
+restart your foreground `hermes gateway run`) for initial backend discovery. Quit
+and reopen Desktop or reload the Webapp, then enable **Projects** in
+**Capabilities → Plugins**. The Desktop half is independently opt-in even when the
+backend is enabled. Use the same host/connection/profile as the install. See
+[after-install instructions](after-install.md).
+
+The repository root is the unified runtime package: `plugin.yaml`, buildable
+`pyproject.toml`, `hermes_projects/`, `dashboard/`, and Actions-published
+`desktop/plugin.js` on `main`. Frontend source, npm manifests, lockfile and tests
+live under `frontend/`; Hermes only treats a root npm manifest as runtime dependencies.
+Hermes clones Git and reconciles the shipped `desktop/` into its app-level plugin
+folder; it neither builds TSX nor downloads Actions artifacts. The wheel is for
+Python packaging; the optional archive is for manual distribution.
+
+[Build workflow](.github/workflows/build.yml) runs locked frontend checks and the
+real installer/backend checks with read-only permissions on pull requests. It builds
+before testing the bundle and passes the resulting archive to the installer job.
+Local `desktop/plugin.js` is ignored; CI rejects generated asset changes in source
+PRs. Do not force-add the bundle. A clone of published `main` tracks the distributed
+file, so local rebuilds there can still show a diff; leave that diff out of source PRs.
+
+After a push/merge to `main`, or a manual run selecting `main`, the guarded publisher
+rebuilds the triggering SHA that passed both validation jobs and commits only
+`desktop/plugin.js`. Publishers run independently and coordinate using an atomic
+expected-SHA push lease; each asset commit extends the exact fetched main tip.
+Rollbacks or rewrites racing a push are preserved.
+Newer source on main causes a safe skip so its own workflow handles publication;
+concurrent bot asset-only commits can be retried using the validated build. PRs and manual runs
+on other branches cannot publish. Only this job has `contents: write`; it uses the
+repository's `GITHUB_TOKEN`, with no custom secrets. Repository Actions settings and
+main branch rules must allow its bot to push; a rejected push fails visibly. It does
+not bypass protection. The token's asset push does not recursively trigger another
+push workflow ([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)).
+
+**Bootstrap:** `main` currently has no bundle. Merging the source change alone is
+insufficient: wait for the successful publisher commit before using the one-line
+install. If publication fails, fix Actions permissions/branch rules and manually
+rerun on `main`. An uploaded CI archive alone cannot make a Git install work. Later
+source merges can briefly leave the previous bundle installed until publication;
+wait for success before installing/updating. GitHub-hosted write behavior remains
+unverified until an actual merged or manual `main` run succeeds.
 
 This package needs no agent tools or hooks. The `dashboard/manifest.json` exists
 solely to load `/api/plugins/hermes-projects/*` on Hermes's shared server. It does
@@ -106,12 +154,12 @@ Hermes image, disposable `/tmp/hermes-projects-home`, its own network and synthe
 auth/inference. Only `hermes gateway run` launches. `HERMES_DASHBOARD=0`.
 
 ```sh
-npm run build
+npm --prefix frontend run build
 # All Compose commands run from this repository root:
 docker compose --project-directory . -f tests/docker/compose.yml build
 docker compose --project-directory . -f tests/docker/compose.yml up -d --wait --no-build
-PLAYWRIGHT_BROWSERS_PATH="$PWD/artifacts/browsers" npx playwright install chromium
-PLAYWRIGHT_BROWSERS_PATH="$PWD/artifacts/browsers" npm run test:e2e
+(cd frontend && PLAYWRIGHT_BROWSERS_PATH="$PWD/../artifacts/browsers" npx playwright install chromium)
+PLAYWRIGHT_BROWSERS_PATH="$PWD/artifacts/browsers" npm --prefix frontend run test:e2e
 # Explicit cleanup of only this fixture:
 docker compose --project-directory . -f tests/docker/compose.yml down -v
 ```
@@ -131,6 +179,6 @@ requests fail. Its replies echo the actual inference request model and whether t
 attachment marker reached the model input. Real authenticated browser tests use the
 mounted plugin, gateway, native model menu, uploads and composer. No inference or
 browser API responses are faked by Playwright. A delayed, forwarded metadata request
-exercises navigation races. Screenshots are saved under `artifacts/` (ignored), and
-failure screenshots under `test-results/`. Traces are disabled to avoid retaining
+exercises navigation races. Screenshots are saved under `frontend/artifacts/` (ignored), and
+failure screenshots under `frontend/test-results/`. Traces are disabled to avoid retaining
 authentication tickets. See [exact validation results and gaps](docs/validation.md).

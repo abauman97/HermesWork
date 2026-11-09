@@ -1,3 +1,6 @@
+> Historical feature validation before the frontend tooling relocation. For current
+> commands and Git installation results, see [git-installation.md](git-installation.md).
+
 # Validation record
 
 2026-11-09. This repository has no base commit or remote. Existing uncommitted and
