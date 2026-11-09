@@ -1,0 +1,7 @@
+{
+  "name": "hermes-projects",
+  "label": "Projects",
+  "description": "Native project management for Desktop and Webapp",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}

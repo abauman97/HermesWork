@@ -1,0 +1,32 @@
+name: hermes-projects-test
+services:
+  inference:
+    build:
+      context: .
+      dockerfile: tests/docker/inference.Dockerfile
+  hermes:
+    init: true
+    build:
+      context: .
+      dockerfile: tests/docker/Dockerfile
+      args:
+        HERMES_IMAGE: ${HERMES_PROJECTS_IMAGE:-nousresearch/hermes-agent@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002}
+    depends_on: [inference]
+    ports:
+      - "${HERMES_PROJECTS_BIND:-127.0.0.1}:${HERMES_PROJECTS_PORT:-9137}:9137"
+    healthcheck:
+      test:
+        [
+          CMD,
+          /opt/hermes/.venv/bin/python,
+          /opt/hermes-projects/tests/docker/health.py,
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${HERMES_PROJECTS_SUBNET:-10.247.137.0/24}
