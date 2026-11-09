@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild desktop/src/plugin.tsx --bundle --format=esm --platform=browser --external:@hermes/plugin-sdk --external:react --external:react/jsx-runtime --outfile=desktop/plugin.js",
+    "build": "esbuild src/plugin.tsx --bundle --format=esm --platform=browser --external:@hermes/plugin-sdk --external:react --external:react/jsx-runtime --outfile=../desktop/plugin.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint desktop/src tests/frontend tests/e2e",
+    "lint": "eslint src tests/frontend tests/e2e",
     "test": "vitest run",
     "test:e2e": "playwright test"
   },

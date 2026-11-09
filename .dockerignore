@@ -1,11 +1,19 @@
 .git
 .venv
-node_modules
+**/node_modules
 artifacts
 test-results
 playwright-report
-__pycache__
+**/__pycache__
 
 dist
 .pytest_cache
 .ruff_cache
+
+frontend/artifacts
+frontend/test-results
+frontend/playwright-report
+.env
+.env.*
+**/.env
+**/.env.*

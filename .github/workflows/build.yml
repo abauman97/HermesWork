@@ -1,0 +1,52 @@
+name: Build and validate plugin
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Builds never publish code, create commits, or need custom secrets.
+permissions:
+  contents: read
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend run typecheck
+      - run: npm --prefix frontend run lint
+      - run: npm --prefix frontend test
+      - run: npm --prefix frontend run build
+      # Git installers clone the default branch. Artifact-only distribution cannot work.
+      - name: Require the generated bundle in Git, with current contents
+        run: |
+          git ls-files --error-unmatch desktop/plugin.js
+          git diff --exit-code -- desktop/plugin.js
+      - run: python3 scripts/package.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hermes-projects
+          path: dist/hermes-projects-0.1.0.tar.gz
+          if-no-files-found: error
+
+  hermes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+      - name: Test the official installer and backend in a disposable Hermes container
+        run: |
+          docker run --rm --user root --entrypoint sh \
+            -e HERMES_PROJECTS_DISPOSABLE=1 \
+            -v "$PWD:/source:ro" \
+            nousresearch/hermes-agent@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002 \
+            -c 'cp -R /source /tmp/plugin-tests && cd /tmp/plugin-tests && python3 scripts/test_installer.py && python3 scripts/check_backend.py'

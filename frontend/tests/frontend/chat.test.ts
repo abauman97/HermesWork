@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { createProjectChat, receiptKey } from "../../desktop/src/chat";
+import { createProjectChat, receiptKey } from "../../src/chat";
 import { host } from "./sdk";
 import type { PluginContext } from "@hermes/plugin-sdk";
 
@@ -297,7 +297,7 @@ it("retains frozen ambiguous requests when the workspace moves", async () => {
 });
 
 it("explicit retirement unblocks corrupt or stale receipts without creating a chat", async () => {
-  const { forgetReceipt } = await import("../../desktop/src/chat");
+  const { forgetReceipt } = await import("../../src/chat");
   sessionStorage.setItem(key, "corrupt");
   const otherKey = receiptKey("other-connection", "default", project.id);
   sessionStorage.setItem(otherKey, "other tab/connection request");
@@ -313,7 +313,7 @@ it("explicit retirement unblocks corrupt or stale receipts without creating a ch
 });
 
 it("refuses receipt retirement while its create is pending", async () => {
-  const { forgetReceipt } = await import("../../desktop/src/chat");
+  const { forgetReceipt } = await import("../../src/chat");
   host.requestProfile.mockImplementation(async (_r, method) => {
     if (method === "projects.list") return { projects: [project] };
     if (method === "projects.for_cwd") return { project };
